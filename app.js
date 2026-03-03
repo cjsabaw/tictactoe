@@ -66,47 +66,27 @@ async function startMatchmaking() {
 }
 
 async function makeMove(index) {
-    if (currentTurn !== username) return;
-
+    // 1. Fetch the latest match data to check status
     const { data: match } = await supabaseClient
         .from('matches')
         .select('*')
         .eq('id', currentMatchId)
         .single();
 
-    if (match.status === 'finished') return; // Prevent moves after game ends
-
-    let newState = match.game_state || {};
-
-    if (!newState[index]) {
-        newState[index] = username.substring(0, 1).toUpperCase();
-
-        const winnerSymbol = checkWinner(newState);
-        let finalStatus = 'playing';
-        let winningPlayer = null;
-
-        if (winnerSymbol === 'draw') {
-            finalStatus = 'finished';
-        } else if (winnerSymbol) {
-            finalStatus = 'finished';
-            winningPlayer = username; // The person who just moved won
-        }
-
-        const nextTurn = (username === match.player_1) ? match.player_2 : match.player_1;
-
-        await supabaseClient
-            .from('matches')
-            .update({
-                game_state: newState,
-                current_turn: nextTurn,
-                status: finalStatus,
-                winner: winningPlayer // You'll need to add this column to DB
-            })
-            .eq('id', currentMatchId);
+    // 2. BLOCK the move if the enemy hasn't joined yet
+    if (match.status !== 'playing') {
+        statusText.innerText = "Waiting for an opponent to join...";
+        return;
     }
+
+    // 3. BLOCK the move if it's not your turn
+    if (match.current_turn !== username) {
+        statusText.innerText = "Wait for your turn!";
+        return;
+    }
+
+    // ... rest of your logic (updating game_state, etc.)
 }
-
-
 async function startGame() {
     document.getElementById('setup-container').classList.add('hidden');
     document.getElementById('game-container').classList.remove('hidden');
@@ -230,4 +210,5 @@ function checkWinner(state) {
     if (Object.keys(state).length === 9) return 'draw';
 
     return null;
+
 }
