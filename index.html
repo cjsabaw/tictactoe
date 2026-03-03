@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supabase Multiplayer Mini-Game</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+    <div id="setup-container">
+        <h1>Enter Game</h1>
+        <input type="text" id="username" placeholder="Enter Username">
+        <button id="join-btn">Find a Match</button>
+    </div>
+
+    <div id="game-container" class="hidden">
+        <h2 id="status">Waiting for updates...</h2>
+        <div id="grid" class="grid">
+            </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
