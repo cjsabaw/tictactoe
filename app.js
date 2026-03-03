@@ -4,25 +4,29 @@ const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let currentMatchId = null;
 let username = "";
-let myRole = ""; // 'player_1' or 'player_2'
 let currentTurn = "";
 
 const joinBtn = document.getElementById('join-btn');
 const statusText = document.getElementById('status');
+const gridElement = document.getElementById('grid');
 
-joinBtn.addEventListener('click', startMatchmaking);
+// 1. Initialize the 3x3 Grid on page load
+for (let i = 0; i < 9; i++) {
+    const cell = document.createElement('div');
+    cell.classList.add('cell');
+    cell.dataset.index = i;
+    cell.addEventListener('click', () => makeMove(i));
+    gridElement.appendChild(cell);
+}
 
-async function startMatchmaking() {
+// 2. Matchmaking Logic
+joinBtn.addEventListener('click', async () => {
     username = document.getElementById('username').value;
     if (!username) return alert("Enter a username");
 
     statusText.innerText = "Searching for a match...";
 
-    // Find a match: 
-    // 1. Status is 'waiting'
-    // 2. Player_2 is empty
-    // 3. ORDER by created_at (ascending) to get the oldest one first
-    const { data: openMatches, error } = await supabaseClient
+    const { data: openMatches } = await supabaseClient
         .from('matches')
         .select('*')
         .eq('status', 'waiting')
@@ -33,80 +37,70 @@ async function startMatchmaking() {
     if (openMatches && openMatches.length > 0) {
         const match = openMatches[0];
         currentMatchId = match.id;
-        myRole = "player_2";
 
-        await supabaseClient
-            .from('matches')
-            .update({
-                player_2: username,
-                status: 'playing',
-                current_turn: match.player_1 // Player 1 starts
-            })
-            .eq('id', currentMatchId);
+        await supabaseClient.from('matches').update({
+            player_2: username,
+            status: 'playing',
+            current_turn: match.player_1 // Player 1 always starts
+        }).eq('id', currentMatchId);
 
         startGame();
     } else {
-        // No match found, create a new room
         currentMatchId = `room-${Math.floor(Math.random() * 10000)}`;
-        myRole = "player_1";
-
-        await supabaseClient
-            .from('matches')
-            .insert({
-                id: currentMatchId,
-                player_1: username,
-                status: 'waiting',
-                current_turn: username,
-                game_state: {}
-            });
+        await supabaseClient.from('matches').insert({
+            id: currentMatchId,
+            player_1: username,
+            status: 'waiting',
+            current_turn: username,
+            game_state: {}
+        });
 
         statusText.innerText = "Waiting for an opponent...";
         startGame();
     }
-}
+});
 
-async function makeMove(index) {
-    // 1. Fetch the latest match data to check status
-    const { data: match } = await supabaseClient
-        .from('matches')
-        .select('*')
-        .eq('id', currentMatchId)
-        .single();
-
-    // 2. BLOCK the move if the enemy hasn't joined yet
-    if (match.status !== 'playing') {
-        statusText.innerText = "Waiting for an opponent to join...";
-        return;
-    }
-
-    // 3. BLOCK the move if it's not your turn
-    if (match.current_turn !== username) {
-        statusText.innerText = "Wait for your turn!";
-        return;
-    }
-
-    // ... rest of your logic (updating game_state, etc.)
-}
+// 3. Game Lifecycle
 async function startGame() {
     document.getElementById('setup-container').classList.add('hidden');
     document.getElementById('game-container').classList.remove('hidden');
 
-    // 1. Immediately fetch the LATEST data from the DB 
-    // This catches the case where Player 2 joined while we were loading.
     const { data: match } = await supabaseClient
-        .from('matches')
-        .select('*')
-        .eq('id', currentMatchId)
-        .single();
+        .from('matches').select('*').eq('id', currentMatchId).single();
 
-    if (match) {
-        updateUI(match);
-    }
-
-    // 2. Then start listening for future changes
+    if (match) updateUI(match);
     subscribeToMatch();
 }
 
+async function makeMove(index) {
+    const { data: match } = await supabaseClient
+        .from('matches').select('*').eq('id', currentMatchId).single();
+
+    // Validations: Is game active? Is it my turn? Is cell empty?
+    if (match.status !== 'playing' || match.current_turn !== username || match.game_state[index]) {
+        return;
+    }
+
+    let newState = match.game_state || {};
+    newState[index] = (username === match.player_1) ? "X" : "O";
+
+    const winnerSymbol = checkWinner(newState);
+    const nextTurn = (username === match.player_1) ? match.player_2 : match.player_1;
+
+    let updateData = {
+        game_state: newState,
+        current_turn: nextTurn
+    };
+
+    if (winnerSymbol) {
+        updateData.status = 'finished';
+        updateData.winner = (winnerSymbol === 'draw') ? 'draw' : username;
+    }
+
+    await supabaseClient.from('matches').update(updateData).eq('id', currentMatchId);
+}
+
+// 4. Realtime Sync & UI Updates
 function subscribeToMatch() {
     supabaseClient
         .channel(`match_${currentMatchId}`)
@@ -116,99 +110,54 @@ function subscribeToMatch() {
             table: 'matches',
             filter: `id=eq.${currentMatchId}`
         }, (payload) => {
-            const match = payload.new;
-            currentTurn = match.current_turn; // Sync the turn locally
-
-            if (match.status === 'playing') {
-                statusText.innerText = (currentTurn === username)
-                    ? "Your Turn!"
-                    : `Waiting for ${currentTurn}...`;
-                renderBoard(match.game_state);
-            }
+            updateUI(payload.new);
         })
         .subscribe();
 }
 
 function updateUI(match) {
     currentTurn = match.current_turn;
+    renderBoard(match.game_state);
 
-    if (match.status === 'finished') {
-        const board = match.game_state;
-        const winner = checkWinner(board);
+    if (match.status === 'playing') {
+        gridElement.classList.remove('disabled');
+        statusText.innerText = (currentTurn === username) ? "Your Turn!" : `Waiting for ${currentTurn}...`;
+    } else if (match.status === 'finished') {
+        gridElement.classList.add('disabled');
 
-        if (winner === 'draw') {
+        // Handle Game Over UI
+        const winSymbol = checkWinner(match.game_state);
+        if (winSymbol === 'draw') {
             statusText.innerHTML = "It's a Draw! <button onclick='location.reload()'>Find New Match</button>";
         } else {
-            const resultText = (winner === username.substring(0, 1).toUpperCase()) ? "You Won " : "You Lost! ";
+            const mySymbol = (username === match.player_1) ? "X" : "O";
+            const resultText = (winSymbol === mySymbol) ? "You Won! " : "You Lost! ";
             statusText.innerHTML = `${resultText} <button onclick='location.reload()'>Find New Match</button>`;
         }
-        renderBoard(match.game_state);
-    } else if (match.status === 'playing') {
-        statusText.innerText = (currentTurn === username) ? "Your Turn!" : `Waiting for ${currentTurn}...`;
-        renderBoard(match.game_state);
     } else {
+        gridElement.classList.add('disabled');
         statusText.innerText = "Waiting for an opponent...";
     }
 }
 
-// Then update your subscription to use it:
-function subscribeToMatch() {
-    supabaseClient
-        .channel(`match_${currentMatchId}`)
-        .on('postgres_changes', {
-            event: 'UPDATE',
-            schema: 'public',
-            table: 'matches',
-            filter: `id=eq.${currentMatchId}`
-        }, (payload) => {
-            updateUI(payload.new); // Call the helper here
-        })
-        .subscribe();
-}
-
-// Initialize the 3x3 Grid on page load
-const grid = document.getElementById('grid');
-for (let i = 0; i < 9; i++) {
-    const cell = document.createElement('div');
-    cell.classList.add('cell');
-    cell.dataset.index = i;
-    cell.addEventListener('click', () => makeMove(i));
-    grid.appendChild(cell);
-}
-
-// Render the board based on the game_state JSON from Supabase
 function renderBoard(state) {
     const cells = document.querySelectorAll('.cell');
-    // Clear all cells first
     cells.forEach(c => c.innerText = "");
-
-    // state looks like { "0": "A", "4": "B" }
     if (!state) return;
-
     Object.keys(state).forEach(index => {
-        if (cells[index]) {
-            cells[index].innerText = state[index];
-        }
+        if (cells[index]) cells[index].innerText = state[index];
     });
-}   
+}
 
 function checkWinner(state) {
     const lines = [
-        [0, 1, 2], [3, 4, 5], [6, 7, 8], // Rows
-        [0, 3, 6], [1, 4, 7], [2, 5, 8], // Cols
-        [0, 4, 8], [2, 4, 6]             // Diagonals
+        [0, 1, 2], [3, 4, 5], [6, 7, 8],
+        [0, 3, 6], [1, 4, 7], [2, 5, 8],
+        [0, 4, 8], [2, 4, 6]
     ];
-
     for (let line of lines) {
         const [a, b, c] = line;
-        if (state[a] && state[a] === state[b] && state[a] === state[c]) {
-            return state[a]; // Returns the letter of the winner ('A', 'B', etc.)
-        }
+        if (state[a] && state[a] === state[b] && state[a] === state[c]) return state[a];
     }
-
-    // Check for Draw (if all 9 cells are filled and no winner)
-    if (Object.keys(state).length === 9) return 'draw';
-
-    return null;
-
+    return Object.keys(state).length === 9 ? 'draw' : null;
 }
